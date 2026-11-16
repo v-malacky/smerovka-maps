@@ -131,6 +131,15 @@ def main():
     json.dump(catalog, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     upload(out, "catalog.json", "application/json", force=True)
     req("PATCH", f"{API}/repos/{repo}/releases/{rel['id']}", token, {"make_latest": "true"})
+    # staré verzie upratať (ponechať posledné 2 – rozbehnuté sťahovania z predošlej verzie dobehnú)
+    keep = int(os.environ.get("KEEP_RELEASES", "2"))
+    rels = [r for r in (req("GET", f"{API}/repos/{repo}/releases?per_page=50", token) or [])
+            if r["tag_name"].startswith("maps-")]
+    rels.sort(key=lambda r: r["tag_name"], reverse=True)
+    for old in rels[keep:]:
+        print(f"Mažem starú verziu {old['tag_name']}")
+        req("DELETE", f"{API}/repos/{repo}/releases/{old['id']}", token)
+        req("DELETE", f"{API}/repos/{repo}/git/refs/tags/{old['tag_name']}", token)
     print(f"\nHotovo. Adresa pre appku:\n  https://github.com/{repo}/releases/latest/download/catalog.json")
 
 
