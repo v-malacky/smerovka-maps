@@ -242,6 +242,37 @@ def main():
                     known.add(key)
                     cameras.append((key[0], key[1], devices.get(o.id, 0), o.tags.get("direction", "")))
 
+    # Pass 4: dopravné značky STOP a "daj prednosť" (highway=stop / give_way). Smer, z ktorého platia:
+    # pri direction=forward/backward sa dopočíta z cesty (smer príjazdu k uzlu), inak -1 (neznámy).
+    sign_nodes = {}
+    for f in files:
+        for o in osmium.FileProcessor(f, osmium.osm.NODE).with_filter(osmium.filter.KeyFilter("highway")):
+            hw = o.tags.get("highway")
+            if hw not in ("stop", "give_way") or not o.location.valid():
+                continue
+            d = (o.tags.get("direction") or "").strip().lower()
+            sign_nodes[o.id] = [e6(o.location.lat), e6(o.location.lon), 0 if hw == "stop" else 1, d, -1]
+    want = {nid for nid, v in sign_nodes.items() if v[3] in ("forward", "backward")}
+    if want:
+        for f in files:
+            fp = osmium.FileProcessor(f, osmium.osm.NODE | osmium.osm.WAY).with_locations()                 .with_filter(osmium.filter.KeyFilter("highway"))
+            for w in fp:
+                if not w.is_way():
+                    continue
+                nodes = [n for n in w.nodes]
+                for i, n in enumerate(nodes):
+                    if n.ref not in want:
+                        continue
+                    v = sign_nodes[n.ref]
+                    # forward = platí pre jazdu v smere cesty: prichádza sa od predošlého uzla
+                    j = i - 1 if v[3] == "forward" else i + 1
+                    if 0 <= j < len(nodes) and nodes[j].location.valid() and n.location.valid():
+                        a, b = nodes[j].location, n.location
+                        dx = (b.lon - a.lon) * math.cos(math.radians(b.lat))
+                        dy = b.lat - a.lat
+                        v[4] = int(round(math.degrees(math.atan2(dx, dy)))) % 360
+    signs = [(v[0], v[1], v[2], v[4]) for v in sign_nodes.values()]
+
     print(f"places={len(places)} streets_raw={len(streets_raw)} pois={len(pois)} addrs={len(addrs)} "
           f"cameras={len(cameras)}", flush=True)
 
@@ -252,6 +283,7 @@ def main():
         CREATE VIRTUAL TABLE entry_fts USING fts4(content="", text, prefix="2,3,4");
         CREATE TABLE addr(street TEXT, num TEXT, lat INT, lon INT, PRIMARY KEY(street, num, lat, lon)) WITHOUT ROWID;
         CREATE TABLE camera(lat INT, lon INT, maxspeed INT, direction TEXT);
+        CREATE TABLE sign(lat INT, lon INT, kind INT, bearing INT);
         CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
     """)
     rows = []
@@ -293,6 +325,7 @@ def main():
                    ((r[0], norm(r[2]) + " " + norm(r[3] or "") + " " + norm(r[4] or "")) for r in rows))
     db.executemany("INSERT INTO addr VALUES (?,?,?,?)", sorted(addrs))
     db.executemany("INSERT INTO camera VALUES (?,?,?,?)", cameras)
+    db.executemany("INSERT INTO sign VALUES (?,?,?,?)", signs)
     db.execute("INSERT INTO entry_fts(entry_fts) VALUES ('optimize')")
     db.execute("INSERT INTO meta VALUES ('version', '1')")
     db.commit()
