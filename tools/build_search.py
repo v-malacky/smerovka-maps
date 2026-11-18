@@ -139,6 +139,7 @@ def main():
     pois = []         # (name, cat, lat, lon)
     addrs = set()     # (street_norm, num, lat_e6, lon_e6)
     cameras = []
+    extras = []
 
     # Pass 1: places (needed for street -> city assignment).
     for f in files:
@@ -220,6 +221,13 @@ def main():
                 name = tags.get("name") or tags.get("brand")
                 if name:
                     pois.append((name, cat, lat, lon))
+                # doplnkové info pre navigáciu: značka čerpačky, poplatok za parkovanie
+                if cat in ("Čerpacia stanica", "Parkovisko", "Nabíjacia stanica", "Odpočívadlo"):
+                    brand = tags.get("brand") or tags.get("operator") or ""
+                    fee = (tags.get("fee") or "").lower()
+                    fee = "no" if fee in ("no", "free") else ("yes" if fee and fee not in ("unknown",) else "")
+                    if brand or fee:
+                        extras.append((e6(lat), e6(lon), cat, brand[:40], fee))
 
     # Pass 3: radary zadané cez relácie type=enforcement (rola "device") – nie vždy majú highway=speed_camera
     known = {(c[0], c[1]) for c in cameras}
@@ -284,6 +292,7 @@ def main():
         CREATE TABLE addr(street TEXT, num TEXT, lat INT, lon INT, PRIMARY KEY(street, num, lat, lon)) WITHOUT ROWID;
         CREATE TABLE camera(lat INT, lon INT, maxspeed INT, direction TEXT);
         CREATE TABLE sign(lat INT, lon INT, kind INT, bearing INT);
+        CREATE TABLE poi_extra(lat INT, lon INT, cat TEXT, brand TEXT, fee TEXT);
         CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
     """)
     rows = []
@@ -326,6 +335,7 @@ def main():
     db.executemany("INSERT INTO addr VALUES (?,?,?,?)", sorted(addrs))
     db.executemany("INSERT INTO camera VALUES (?,?,?,?)", cameras)
     db.executemany("INSERT INTO sign VALUES (?,?,?,?)", signs)
+    db.executemany("INSERT INTO poi_extra VALUES (?,?,?,?,?)", extras)
     db.execute("INSERT INTO entry_fts(entry_fts) VALUES ('optimize')")
     db.execute("INSERT INTO meta VALUES ('version', '1')")
     db.commit()
