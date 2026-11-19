@@ -260,6 +260,12 @@ def main():
                 continue
             d = (o.tags.get("direction") or "").strip().lower()
             sign_nodes[o.id] = [e6(o.location.lat), e6(o.location.lon), 0 if hw == "stop" else 1, d, -1]
+    # železničné priecestia pre autá (railway=level_crossing; railway=crossing je len pre chodcov) – kind 2
+    for f in files:
+        for o in osmium.FileProcessor(f, osmium.osm.NODE).with_filter(osmium.filter.KeyFilter("railway")):
+            if o.tags.get("railway") != "level_crossing" or not o.location.valid():
+                continue
+            sign_nodes[o.id] = [e6(o.location.lat), e6(o.location.lon), 2, "", -1]
     want = {nid for nid, v in sign_nodes.items() if v[3] in ("forward", "backward")}
     if want:
         for f in files:
