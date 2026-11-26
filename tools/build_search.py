@@ -48,6 +48,9 @@ POI_OTHER = {
     ("amenity", "border_control"): "Hraničný priechod", ("barrier", "border_control"): "Hraničný priechod",
 }
 
+MAJOR_POI = {"Nákupné centrum", "Nemocnica", "Letisko", "Železničná stanica", "Autobusová stanica", "Univerzita",
+             "ZOO", "Aquapark", "Štadión", "Hrad", "Hraničný priechod", "Zábavný park"}
+
 NONALNUM = re.compile(r"[^0-9a-z]+")
 
 
@@ -229,6 +232,53 @@ def main():
                     if brand or fee:
                         extras.append((e6(lat), e6(lon), cat, brand[:40], fee))
 
+    # Pass 2b: POI zakreslené ako multipolygón (veľké nákupné centrá, nemocnice, areály – napr. "Galleria
+    # Eurovea", "Bory Mall"). Bod = priemer uzlov vonkajších ciest.
+    rel_pois = {}   # rel id -> (name, cat, tags dict, [outer way ids])
+    want_ways = set()
+    for f in files:
+        print("relations", f, flush=True)
+        for o in osmium.FileProcessor(f, osmium.osm.RELATION).with_filter(osmium.filter.TagFilter(("type", "multipolygon"))):
+            tags = o.tags
+            cat = poi_category(tags)
+            name = tags.get("name") or tags.get("brand")
+            has_addr = "addr:housenumber" in tags or "addr:conscriptionnumber" in tags
+            if not (cat and name) and not has_addr:
+                continue
+            outer = [m.ref for m in o.members if m.type == "w" and m.role in ("outer", "")]
+            if not outer:
+                continue
+            rel_pois[o.id] = (name, cat, {t.k: t.v for t in tags}, outer)
+            want_ways.update(outer)
+    if want_ways:
+        way_sum = {}
+        for f in files:
+            fp = osmium.FileProcessor(f, osmium.osm.NODE | osmium.osm.WAY).with_locations() \
+                .with_filter(osmium.filter.IdFilter(list(want_ways)))
+            for w in fp:
+                if not w.is_way() or w.id not in want_ways:
+                    continue
+                la = lo = 0.0
+                n = 0
+                for nd in w.nodes:
+                    if nd.location.valid():
+                        la += nd.location.lat
+                        lo += nd.location.lon
+                        n += 1
+                if n:
+                    way_sum[w.id] = (la, lo, n)
+        for (name, cat, tags, outer) in rel_pois.values():
+            parts = [way_sum[w] for w in outer if w in way_sum]
+            n = sum(p[2] for p in parts)
+            if not n:
+                continue
+            lat = sum(p[0] for p in parts) / n
+            lon = sum(p[1] for p in parts) / n
+            add_addr(tags, lat, lon)
+            if cat and name:
+                pois.append((name, cat, lat, lon))
+        print(f"multipolygon POI: {len(rel_pois)}", flush=True)
+
     # Pass 3: radary zadané cez relácie type=enforcement (rola "device") – nie vždy majú highway=speed_camera
     known = {(c[0], c[1]) for c in cameras}
     devices = {}
@@ -333,7 +383,8 @@ def main():
         if k in pseen:
             continue
         pseen.add(k)
-        emit(KIND_POI, name, grid.nearest(lat, lon) or "", cat, lat, lon, 20)
+        # významné ciele (nákupné centrum, nemocnica, letisko…) pred rovnomennou kaviarňou či obchodom
+        emit(KIND_POI, name, grid.nearest(lat, lon) or "", cat, lat, lon, 35 if cat in MAJOR_POI else 20)
 
     db.executemany("INSERT INTO entry VALUES (?,?,?,?,?,?,?,?)", rows)
     db.executemany("INSERT INTO entry_fts(docid, text) VALUES (?,?)",
