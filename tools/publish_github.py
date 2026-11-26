@@ -10,6 +10,9 @@ Použitie:
 - Release je označený ako "latest" → appka číta
   https://github.com/<vlastník>/<repozitár>/releases/latest/download/catalog.json
 - Opätovné spustenie preskočí už nahraté súbory (rovnaká veľkosť), takže sa dá pokračovať po prerušení.
+- Súbory, ktoré sa od minulého zverejnenia nezmenili (rovnaká veľkosť a neboli prepísané), sa nenahrávajú
+  znova – katalóg na ne odkazuje v staršom release a má pri nich "build" verzie, v ktorej vznikli; appka
+  ich pri aktualizácii nesťahuje. Staršie release, na ktoré katalóg ešte odkazuje, sa nemažú.
 """
 import json
 import os
@@ -80,6 +83,16 @@ def main():
 
     catalog = json.load(open(os.path.join(ROOT, "catalog.json"), encoding="utf-8"))
     build = catalog["build"]
+    # minulé zverejnenie: nezmenené súbory sa len prevezmú (adresa + verzia)
+    prev_path = os.path.join(ROOT, "catalog.cloud.json")
+    prev, prev_time = {}, 0.0
+    if os.path.exists(prev_path):
+        pc = json.load(open(prev_path, encoding="utf-8"))
+        prev_time = os.path.getmtime(prev_path)
+        for p in pc.get("packages", []):
+            for f in p.get("files", []):
+                if f.get("url"):
+                    prev[(p["id"], f["name"])] = dict(f, build=f.get("build") or pc["build"])
     tag = f"maps-{build}"
 
     rel = req("GET", f"{API}/repos/{repo}/releases/tags/{tag}", token)
@@ -123,8 +136,16 @@ def main():
         print(f"{pkg['name']} ({pkg['id']})")
         for f in pkg["files"]:
             asset = f"{pkg['id']}-{f['name']}"
-            upload(os.path.join(ROOT, pkg["id"], f["name"]), asset)
+            path = os.path.join(ROOT, pkg["id"], f["name"])
+            f["size"] = os.path.getsize(path)
+            old = prev.get((pkg["id"], f["name"]))
+            if old and old["size"] == f["size"] and os.path.getmtime(path) < prev_time and old["build"] != build:
+                print(f"  {asset}: nezmenené (verzia {old['build']})")
+                f["url"], f["build"] = old["url"], old["build"]
+                continue
+            upload(path, asset)
             f["url"] = download_base + asset
+            f["build"] = build
 
     # katalóg až nakoniec – appka uvidí novú verziu, až keď sú nahraté všetky súbory
     out = os.path.join(ROOT, "catalog.cloud.json")
@@ -136,7 +157,9 @@ def main():
     rels = [r for r in (req("GET", f"{API}/repos/{repo}/releases?per_page=50", token) or [])
             if r["tag_name"].startswith("maps-")]
     rels.sort(key=lambda r: r["tag_name"], reverse=True)
-    for old in rels[keep:]:
+    used = {f["url"].split("/releases/download/")[1].split("/")[0]
+            for p in catalog["packages"] for f in p["files"] if "/releases/download/" in f.get("url", "")}
+    for old in [r for r in rels[keep:] if r["tag_name"] not in used]:
         print(f"Mažem starú verziu {old['tag_name']}")
         req("DELETE", f"{API}/repos/{repo}/releases/{old['id']}", token)
         req("DELETE", f"{API}/repos/{repo}/git/refs/tags/{old['tag_name']}", token)
