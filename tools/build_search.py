@@ -89,6 +89,9 @@ class Grid:
 
 
 def poi_category(tags):
+    # hrady a zámky bývajú zároveň tourism=attraction – kategória "Hrad" je pre vyhľadávanie dôležitejšia
+    if tags.get("historic") == "castle":
+        return "Hrad"
     a = tags.get("amenity")
     if a in POI_AMENITY:
         return POI_AMENITY[a]
